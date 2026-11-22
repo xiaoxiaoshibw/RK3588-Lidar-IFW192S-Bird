@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.16)
+
+if(BIRD_HOST)
+    project(esp32s3_bird_host LANGUAGES CXX)
+    add_executable(bird_host host_main.cpp main/replay_wire.cpp main/tracker.cpp main/geometry.cpp)
+    target_include_directories(bird_host PRIVATE main)
+    target_compile_features(bird_host PRIVATE cxx_std_17)
+else()
+    set(IDF_TARGET esp32s3)
+    include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+    idf_build_set_property(MINIMAL_BUILD ON)
+    project(esp32s3_bird)
+endif()

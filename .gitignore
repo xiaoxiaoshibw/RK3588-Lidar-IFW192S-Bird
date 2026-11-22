@@ -1,0 +1,33 @@
+/data/*
+!/data/README.md
+__pycache__/
+*.py[cod]
+*.pt
+*.pth
+*.onnx
+
+# Generated local research artifacts; source scripts remain tracked.
+/demo/*.json
+/demo/*.jsonl
+/demo/*.png
+/demo/*.svg
+/demo/*.pdf
+/demo/*.log
+/.venv/
+/.pytest_cache/
+
+# Local archives and experiment scripts tied to the original bench setup.
+/docs_archive_20261120.zip
+/firmware/esp32s3_bird_core.zip
+/demo/run_s3_camera_sync_trial.py
+/firmware/esp32s3_bird/replay.py
+
+# ESP-IDF build products and local hardware data.
+/firmware/**/build/
+/firmware/**/sdkconfig
+/firmware/**/sdkconfig.old
+*.bin
+*.birdraw
+*.avi
+*.mkv
+*.mp4

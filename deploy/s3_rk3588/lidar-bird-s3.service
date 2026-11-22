@@ -1,0 +1,13 @@
+[Unit]
+Description=IFW192S ESP32-S3 live viewer
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/opt/lidar-bird-s3/runtime
+Environment=PYTHONPATH=%h/.local/opt/lidar-bird-s3/runtime/vendor
+ExecStart=/usr/bin/python3 -B -u %h/.local/opt/lidar-bird-s3/runtime/viewer.py --http-port 8895
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+menu "Bird replay transport"
+
+config BIRD_USB_SERIAL_JTAG
+    bool "Use native USB Serial/JTAG instead of UART0"
+    default n
+
+config BIRD_UART_BAUD
+    int "UART0 replay baud"
+    depends on !BIRD_USB_SERIAL_JTAG
+    range 115200 3000000
+    default 2000000
+
+endmenu

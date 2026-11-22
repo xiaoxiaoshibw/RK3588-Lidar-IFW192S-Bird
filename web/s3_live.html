@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-S3 鸟类雷达动态位置监控</title>
+<style>
+  :root {
+    --bg: #0b1018;
+    --panel: #121a26;
+    --border: #233044;
+    --text: #e4ecf7;
+    --muted: #8a9bb5;
+    --green: #2ee59d;
+    --amber: #ffb84d;
+    --red: #ff5c77;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: #182233;
+  }
+  .badge.active { color: var(--green); border-color: rgba(46,229,157,0.45); background: rgba(46,229,157,0.10); }
+  .badge.warmup { color: var(--amber); border-color: rgba(255,184,77,0.45); background: rgba(255,184,77,0.10); }
+  .badge.unknown { color: var(--red); border-color: rgba(255,92,119,0.5); background: rgba(255,92,119,0.14); }
+  .metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .metrics strong { color: var(--text); font-weight: 600; }
+  .spacer { flex: 1; }
+  button {
+    background: #1b273a;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 11px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--blue); }
+  main {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
+    gap: 12px;
+    padding: 12px;
+  }
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+    .paired-cloud .cloud-card { order: -1; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .card-head strong { color: var(--text); font-size: 13px; }
+  .card-head[hidden] { display: none; }
+  canvas {
+    width: 100%;
+    height: 310px;
+    display: block;
+    background: #090e16;
+  }
+  #view3d { cursor: grab; }
+  #view3d:active { cursor: grabbing; }
+  .table-card {
+    grid-column: 1 / -1;
+  }
+  .table-scroll { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    padding: 7px 12px;
+    text-align: left;
+    border-bottom: 1px solid rgba(35,48,68,0.6);
+  }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .empty { color: var(--muted); text-align: center; padding: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ESP32-S3 IFW192S 鸟类动态位置</h1>
+  <span id="stateBadge" class="badge">等待数据</span>
+  <div class="metrics">
+    <span>来源 <strong id="mSource">-</strong></span>
+    <span>帧序 <strong id="mSeq">-</strong></span>
+    <span>锁定 <strong id="mLocked">0</strong></span>
+    <span>候选/暂态 <strong id="mCand">0/0</strong></span>
+    <span><span id="latScope">帧尾读完 → 结果</span> <strong id="mLat">-</strong></span>
+    <span>跟踪耗时 <strong id="mTrk">-</strong></span>
+    <span>帧率 <strong id="mFps">-</strong></span>
+  </div>
+  <div class="spacer"></div>
+  <button id="btnPauseCloud" type="button" hidden>暂停回放</button>
+  <button id="btnClear" type="button">清除轨迹</button>
+</header>
+
+<main>
+  <section class="card">
+    <div class="card-head">
+      <strong>俯视图 (Top-Down X–Y)</strong>
+      <span>工作区 1.5–4.5 m · 单位 m</span>
+    </div>
+    <canvas id="topView"></canvas>
+  </section>
+
+  <section class="card cloud-card">
+    <div class="card-head">
+      <strong id="view3dTitle">3D 透视图 (可拖拽旋转 / 滚轮缩放)</strong>
+      <span id="camInfo">方位 -38° 俯仰 26°</span>
+    </div>
+    <canvas id="view3d" title="拖拽旋转 · 滚轮缩放"></canvas>
+    <div id="cloudInfo" class="card-head" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <strong>侧视图 (Side X–Z 高度剖面)</strong>
+      <span>X: 0–5.0 m · Z: -1.5–+2.5 m</span>
+    </div>
+    <canvas id="sideView"></canvas>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <strong>256×192 扫描网格 (2D Box)</strong>
+      <span>当前帧锁定目标框</span>
+    </div>
+    <canvas id="gridView"></canvas>
+  </section>
+
+  <section class="card table-card">
+    <div class="card-head">
+      <strong>当前帧实测锁定目标</strong>
+      <span id="connStatus">连接中...</span>
+    </div>
+    <div class="table-scroll"><table>
+      <thead>
+        <tr>
+          <th>轨迹 ID</th>
+          <th>X (m)</th>
+          <th>Y (m)</th>
+          <th>Z (m)</th>
+          <th>距离 (m)</th>
+          <th>实测点数</th>
+          <th>2D 网格框 [x0, y0, x1, y1]</th>
+        </tr>
+      </thead>
+      <tbody id="trackBody">
+        <tr><td colspan="7" class="empty">暂无锁定目标</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const PALETTE = [
+    "#2ee59d", "#58a6ff", "#ffb84d", "#ff6b9d",
+    "#b388ff", "#4dd0e1", "#ffd54f", "#80cbc4"
+  ];
+  const colorFor = (id) => PALETTE[Math.abs(Number(id) || 0) % PALETTE.length];
+
+  let latest = null;
+  let trails = {};
+  let inputStatus = null;
+  const inputCaptions = {
+    waiting: "等待 S3 实流",
+    streaming: "正在接收 S3 实流",
+    finished: "采集结束 · 保留末帧",
+    closed: "S3 数据源已断开",
+    error: "S3 采集失败",
+  };
+  const MAX_TRAIL = 120;
+  let cloud = null;
+  let cloudPaused = false;
+  let cloudBusy = false;
+  let pendingCloud = null;
+  const cloudStats = { received: 0, rendered: 0, replaced: 0, failed: 0, over100: 0 };
+  const cloudSamples = [];
+  const cloudPaintTimes = [];
+
+  // 3D camera state
+  const cam = { yaw: -38 * Math.PI / 180, pitch: 26 * Math.PI / 180, scale: 82 };
+
+  const el = {
+    badge: document.getElementById("stateBadge"),
+    source: document.getElementById("mSource"),
+    seq: document.getElementById("mSeq"),
+    locked: document.getElementById("mLocked"),
+    cand: document.getElementById("mCand"),
+    lat: document.getElementById("mLat"),
+    latScope: document.getElementById("latScope"),
+    trk: document.getElementById("mTrk"),
+    fps: document.getElementById("mFps"),
+    conn: document.getElementById("connStatus"),
+    body: document.getElementById("trackBody"),
+    camInfo: document.getElementById("camInfo"),
+    top: document.getElementById("topView"),
+    side: document.getElementById("sideView"),
+    grid: document.getElementById("gridView"),
+    view3d: document.getElementById("view3d"),
+    cloudTitle: document.getElementById("view3dTitle"),
+    cloudInfo: document.getElementById("cloudInfo"),
+    pause: document.getElementById("btnPauseCloud"),
+  };
+
+  function setupCanvas(canvas) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w: rect.width, h: rect.height };
+  }
+
+  function updateHeader() {
+    if (inputStatus && inputStatus !== "streaming") {
+      el.badge.className = "badge";
+      el.badge.textContent = inputCaptions[inputStatus];
+    }
+    if (!latest) return;
+    const st = latest.state || "UNKNOWN";
+    if (!inputStatus || inputStatus === "streaming") {
+      el.badge.className = "badge " + (st === "active" ? "active" : st === "warmup" ? "warmup" : "unknown");
+      el.badge.textContent = st === "active"
+        ? "ACTIVE 正常识别"
+        : st === "warmup"
+          ? `WARMUP 预热 (${latest.warmup || 0}/10)`
+          : "UNKNOWN 无效帧";
+    }
+    el.source.textContent = latest.cloud_points === undefined ? latest.source || "-" : "配对回放 · S3 板测";
+    el.source.title = latest.source || "";
+    el.seq.textContent = latest.seq ?? "-";
+    el.locked.textContent = st === "active" ? (latest.tracks?.length ?? 0) : 0;
+    el.cand.textContent = `${latest.candidates ?? 0}/${latest.tentative ?? 0}`;
+    el.lat.textContent = latest.latency_ms != null ? `${latest.latency_ms.toFixed(2)} ms` : "-";
+    el.trk.textContent = latest.tracker_ms != null ? `${latest.tracker_ms.toFixed(2)} ms` : "-";
+    el.fps.textContent = latest.fps != null ? `${latest.fps.toFixed(1)} Hz` : "-";
+
+    if (st !== "active") {
+      el.body.innerHTML = `<tr><td colspan="7" class="empty">${
+        st === "UNKNOWN" ? "当前帧为 UNKNOWN，不显示预测位置" : "背景预热中，尚未进入跟踪"
+      }</td></tr>`;
+      return;
+    }
+    const tracks = latest.tracks || [];
+    if (!tracks.length) {
+      el.body.innerHTML = `<tr><td colspan="7" class="empty">当前帧无锁定目标</td></tr>`;
+      return;
+    }
+    el.body.innerHTML = tracks.map((t) => {
+      const c = colorFor(t.id);
+      const [x, y, z] = t.xyz_m || [0, 0, 0];
+      const box = (t.box || []).join(", ");
+      return `<tr>
+        <td><span class="dot" style="background:${c}"></span>#${t.id}</td>
+        <td>${x.toFixed(3)}</td>
+        <td>${y.toFixed(3)}</td>
+        <td>${z.toFixed(3)}</td>
+        <td>${t.range_m != null ? t.range_m.toFixed(3) : "-"}</td>
+        <td>${t.points}</td>
+        <td>[${box}]</td>
+      </tr>`;
+    }).join("");
+  }
+
+  function drawTopView() {
+    const { ctx, w, h } = setupCanvas(el.top);
+    ctx.clearRect(0, 0, w, h);
+    const pad = 28;
+    const maxX = 5.2;
+    const halfY = 2.8;
+    const scale = Math.min((h - pad * 2) / maxX, (w - pad * 2) / (halfY * 2));
+    const ox = w / 2;
+    const oy = h - pad;
+    const toPx = (x, y) => [ox - y * scale, oy - x * scale];
+
+    // Grid lines
+    ctx.strokeStyle = "#1a2434";
+    ctx.lineWidth = 1;
+    for (let gx = 0; gx <= 5; gx++) {
+      const [, py] = toPx(gx, 0);
+      ctx.beginPath(); ctx.moveTo(pad, py); ctx.lineTo(w - pad, py); ctx.stroke();
+    }
+    for (let gy = -2; gy <= 2; gy++) {
+      const [px] = toPx(0, gy);
+      ctx.beginPath(); ctx.moveTo(px, pad); ctx.lineTo(px, oy); ctx.stroke();
+    }
+
+    // Range arcs (1.5m near, 4.5m far)
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    for (const r of [1.5, 3.0, 4.5]) {
+      ctx.strokeStyle = r === 3.0 ? "#24344c" : "rgba(88,166,255,0.45)";
+      ctx.beginPath();
+      ctx.arc(ox, oy, r * scale, Math.PI * 1.12, Math.PI * 1.88);
+      ctx.stroke();
+      ctx.fillStyle = "#6c82a3";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(`${r.toFixed(1)}m`, ox + 4, oy - r * scale - 3);
+    }
+    ctx.restore();
+
+    // Radar origin
+    ctx.fillStyle = "#58a6ff";
+    ctx.beginPath(); ctx.arc(ox, oy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#8a9bb5";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("雷达 (0,0)", ox + 8, oy + 4);
+
+    // Trails
+    for (const [tid, pts] of Object.entries(trails)) {
+      if (pts.length < 2) continue;
+      const c = colorFor(tid);
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = latest?.state === "UNKNOWN" ? 0.25 : 0.65;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const [px, py] = toPx(p.xyz_m[0], p.xyz_m[1]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Current measured tracks (only when active)
+    if (latest?.state === "active") {
+      for (const t of latest.tracks || []) {
+        const c = colorFor(t.id);
+        const [px, py] = toPx(t.xyz_m[0], t.xyz_m[1]);
+        ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#090e16";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "#e4ecf7";
+        ctx.font = "600 12px sans-serif";
+        ctx.fillText(`#${t.id} (${t.range_m?.toFixed(2)}m, ${t.points}pt)`, px + 9, py + 4);
+      }
+    } else if (latest?.state === "UNKNOWN") {
+      ctx.fillStyle = "rgba(255,92,119,0.85)";
+      ctx.font = "600 13px sans-serif";
+      ctx.fillText("UNKNOWN — 无当前实测点", 14, 24);
+    }
+  }
+
+  function drawSideView() {
+    const { ctx, w, h } = setupCanvas(el.side);
+    ctx.clearRect(0, 0, w, h);
+    const padL = 42, padR = 16, padT = 18, padB = 26;
+    const minX = 0, maxX = 5.0;
+    const minZ = -1.5, maxZ = 2.5;
+    const toPx = (x, z) => [
+      padL + ((x - minX) / (maxX - minX)) * (w - padL - padR),
+      h - padB - ((z - minZ) / (maxZ - minZ)) * (h - padT - padB),
+    ];
+
+    ctx.strokeStyle = "#1a2434";
+    ctx.lineWidth = 1;
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "#6c82a3";
+    for (let x = 0; x <= 5; x++) {
+      const [px] = toPx(x, 0);
+      ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, h - padB); ctx.stroke();
+      ctx.fillText(`${x}m`, px - 6, h - 8);
+    }
+    for (let z = -1; z <= 2; z++) {
+      const [, py] = toPx(0, z);
+      ctx.strokeStyle = z === 0 ? "#2c3f5c" : "#1a2434";
+      ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(w - padR, py); ctx.stroke();
+      ctx.fillText(`${z}m`, 8, py + 4);
+    }
+
+    // Working bounds 1.5m & 4.5m
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(88,166,255,0.4)";
+    for (const bx of [1.5, 4.5]) {
+      const [px] = toPx(bx, 0);
+      ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, h - padB); ctx.stroke();
+    }
+    ctx.restore();
+
+    for (const [tid, pts] of Object.entries(trails)) {
+      if (pts.length < 2) continue;
+      ctx.strokeStyle = colorFor(tid);
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = latest?.state === "UNKNOWN" ? 0.25 : 0.65;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const [px, py] = toPx(p.xyz_m[0], p.xyz_m[2]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    if (latest?.state === "active") {
+      for (const t of latest.tracks || []) {
+        const [px, py] = toPx(t.xyz_m[0], t.xyz_m[2]);
+        ctx.fillStyle = colorFor(t.id);
+        ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#e4ecf7";
+        ctx.font = "600 11px sans-serif";
+        ctx.fillText(`#${t.id} z=${t.xyz_m[2].toFixed(2)}m`, px + 8, py + 4);
+      }
+    }
+  }
+
+  function drawGridView() {
+    const { ctx, w, h } = setupCanvas(el.grid);
+    ctx.clearRect(0, 0, w, h);
+    const pad = 18;
+    const scale = Math.min((w - pad * 2) / 256, (h - pad * 2) / 192);
+    const gx0 = (w - 256 * scale) / 2;
+    const gy0 = (h - 192 * scale) / 2;
+
+    ctx.strokeStyle = "#233044";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(gx0, gy0, 256 * scale, 192 * scale);
+
+    ctx.strokeStyle = "#152030";
+    for (let x = 32; x < 256; x += 32) {
+      ctx.beginPath(); ctx.moveTo(gx0 + x * scale, gy0); ctx.lineTo(gx0 + x * scale, gy0 + 192 * scale); ctx.stroke();
+    }
+    for (let y = 32; y < 192; y += 32) {
+      ctx.beginPath(); ctx.moveTo(gx0, gy0 + y * scale); ctx.lineTo(gx0 + 256 * scale, gy0 + y * scale); ctx.stroke();
+    }
+
+    if (latest?.state === "active") {
+      for (const t of latest.tracks || []) {
+        const [x0, y0, x1, y1] = t.box || [0, 0, 0, 0];
+        const c = colorFor(t.id);
+        const rx = gx0 + x0 * scale;
+        const ry = gy0 + y0 * scale;
+        const rw = Math.max(4, (x1 - x0 + 1) * scale);
+        const rh = Math.max(4, (y1 - y0 + 1) * scale);
+        ctx.fillStyle = c + "33";
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.fillStyle = "#e4ecf7";
+        ctx.font = "600 11px sans-serif";
+        ctx.fillText(`#${t.id} (${t.points}pt)`, rx, Math.max(12, ry - 4));
+      }
+    }
+  }
+
+  function draw3DView() {
+    const { ctx, w, h } = setupCanvas(el.view3d);
+    ctx.clearRect(0, 0, w, h);
+
+    const bounds = cloud && latest.cloud_bounds;
+    const cx = bounds ? (bounds[0] + bounds[3]) / 2 : 2.4;
+    const cy = bounds ? (bounds[1] + bounds[4]) / 2 : 0;
+    const cz = bounds ? (bounds[2] + bounds[5]) / 2 : 0.3;
+    const diameter = bounds ? Math.hypot(
+      bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2]
+    ) : 1;
+    const fitScale = (0.92 * Math.min(w, h) / Math.max(1, diameter)) * cam.scale / 82;
+    const cyaw = Math.cos(cam.yaw), syaw = Math.sin(cam.yaw);
+    const cpitch = Math.cos(cam.pitch), spitch = Math.sin(cam.pitch);
+    const dist = 7.5;
+
+    function project(x, y, z, pixel = [0, 0]) {
+      const dx = x - cx, dy = y - cy, dz = z - cz;
+      // Rotate around Z (yaw), then around screen X (pitch)
+      const rx = dx * cyaw - dy * syaw;
+      const ry = dx * syaw + dy * cyaw;
+      const rz = dz;
+      const py = ry * cpitch - rz * spitch;
+      const pz = ry * spitch + rz * cpitch;
+      const depth = dist - py;
+      if (!bounds && depth <= 0.3) return null;
+      const f = bounds ? fitScale : (cam.scale * 4.2) / depth;
+      pixel[0] = w / 2 + rx * f;
+      pixel[1] = h / 2 - pz * f;
+      return pixel;
+    }
+
+    function line3d(a, b, color, width = 1, dash = []) {
+      const pa = project(a[0], a[1], a[2]);
+      const pb = project(b[0], b[1], b[2]);
+      if (!pa || !pb) return;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      if (dash.length) ctx.setLineDash(dash);
+      ctx.beginPath();
+      ctx.moveTo(pa[0], pa[1]);
+      ctx.lineTo(pb[0], pb[1]);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Floor grid Z=0 (X: 0..5, Y: -2.5..2.5)
+    for (let x = 0; x <= 5; x++) {
+      line3d([x, -2.5, 0], [x, 2.5, 0], "#182334");
+    }
+    for (let y = -2; y <= 2; y++) {
+      line3d([0, y, 0], [5, y, 0], "#182334");
+    }
+    // Working zone 1.5m & 4.5m lines on floor
+    line3d([1.5, -2.5, 0], [1.5, 2.5, 0], "rgba(88,166,255,0.45)", 1, [4, 4]);
+    line3d([4.5, -2.5, 0], [4.5, 2.5, 0], "rgba(88,166,255,0.45)", 1, [4, 4]);
+
+    // Axes from radar (0,0,0)
+    line3d([0, 0, 0], [1.2, 0, 0], "#ff6b6b", 2);
+    line3d([0, 0, 0], [0, 1.2, 0], "#2ee59d", 2);
+    line3d([0, 0, 0], [0, 0, 1.2], "#58a6ff", 2);
+
+    if (cloud) {
+      ctx.fillStyle = "#66839a";
+      const pixel = [0, 0];
+      for (let i = 0; i < cloud.length; i += 3) {
+        if (project(cloud[i], cloud[i + 1], cloud[i + 2], pixel)) {
+          const [x, y] = pixel;
+          if (x >= 0 && x < w && y >= 0 && y < h) ctx.fillRect(x, y, 1.4, 1.4);
+        }
+      }
+    }
+
+    // Trails in 3D
+    for (const [tid, pts] of Object.entries(trails)) {
+      if (pts.length < 2) continue;
+      const c = colorFor(tid);
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = latest?.state === "UNKNOWN" ? 0.25 : 0.7;
+      ctx.beginPath();
+      let started = false;
+      for (const p of pts) {
+        const pr = project(p.xyz_m[0], p.xyz_m[1], p.xyz_m[2]);
+        if (!pr) continue;
+        if (!started) { ctx.moveTo(pr[0], pr[1]); started = true; }
+        else ctx.lineTo(pr[0], pr[1]);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Current measured 3D targets + drop line to Z=0
+    if (latest?.state === "active") {
+      for (const t of latest.tracks || []) {
+        const [x, y, z] = t.xyz_m;
+        const c = colorFor(t.id);
+        line3d([x, y, 0], [x, y, z], c, 1, [3, 3]);
+        const pGround = project(x, y, 0);
+        if (pGround) {
+          ctx.fillStyle = c + "66";
+          ctx.beginPath(); ctx.arc(pGround[0], pGround[1], 3.5, 0, Math.PI * 2); ctx.fill();
+        }
+        const pr = project(x, y, z);
+        if (pr) {
+          ctx.fillStyle = c;
+          ctx.beginPath(); ctx.arc(pr[0], pr[1], 6, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#090e16";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = "#e4ecf7";
+          ctx.font = "600 12px sans-serif";
+          ctx.fillText(`#${t.id}`, pr[0] + 8, pr[1] + 4);
+        }
+      }
+    }
+  }
+
+  function renderAll() {
+    updateHeader();
+    drawTopView();
+    draw3DView();
+    drawSideView();
+    drawGridView();
+  }
+
+  // 3D mouse drag & wheel zoom
+  let dragging = false, lastX = 0, lastY = 0;
+  el.view3d.addEventListener("pointerdown", (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    el.view3d.setPointerCapture(e.pointerId);
+  });
+  el.view3d.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    cam.yaw += (e.clientX - lastX) * 0.01;
+    cam.pitch = Math.max(-1.2, Math.min(1.4, cam.pitch + (e.clientY - lastY) * 0.01));
+    lastX = e.clientX; lastY = e.clientY;
+    el.camInfo.textContent = `方位 ${Math.round(cam.yaw * 180 / Math.PI)}° 俯仰 ${Math.round(cam.pitch * 180 / Math.PI)}°`;
+    draw3DView();
+  });
+  el.view3d.addEventListener("pointerup", () => { dragging = false; });
+  el.view3d.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    cam.scale = Math.max(35, Math.min(200, cam.scale * (e.deltaY > 0 ? 0.92 : 1.08)));
+    draw3DView();
+  }, { passive: false });
+
+  document.getElementById("btnClear").addEventListener("click", () => {
+    trails = {};
+    fetch("/clear-trails", { method: "POST" }).catch(() => {});
+    renderAll();
+  });
+
+  window.addEventListener("resize", renderAll);
+
+  el.pause.addEventListener("click", () => {
+    cloudPaused = !cloudPaused;
+    if (cloudPaused) pendingCloud = null;
+    else cloudPaintTimes.length = 0;
+    el.pause.textContent = cloudPaused ? "继续回放" : "暂停回放";
+    el.conn.textContent = cloudPaused ? "已暂停 · 同帧回放" : "配对回放";
+  });
+
+  function commitFrame(frame) {
+    latest = frame;
+    if (frame.state === "active") {
+      for (const t of frame.tracks || []) {
+        const key = String(t.id);
+        if (!trails[key]) trails[key] = [];
+        trails[key].push({ seq: frame.seq, xyz_m: t.xyz_m, range_m: t.range_m, points: t.points });
+        if (trails[key].length > MAX_TRAIL) trails[key].shift();
+      }
+    }
+    renderAll();
+  }
+
+  async function renderPairedFrames() {
+    cloudBusy = true;
+    while (pendingCloud) {
+      const { frame, receivedAt } = pendingCloud;
+      pendingCloud = null;
+      let points = null;
+      try {
+        const response = await fetch(`/cloud/${frame.seq}`, { signal: AbortSignal.timeout(1500) });
+        if (!response.ok) throw new Error("missing cloud");
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== frame.cloud_points * 12) throw new Error("invalid cloud length");
+        points = new Float32Array(bytes);
+      } catch {
+        cloudStats.failed += 1;
+      }
+      if (cloudPaused) continue;
+      cloud = points;
+      if (latest && frame.seq < latest.seq) trails = {};
+      commitFrame(frame);
+
+      if (points) {
+        const now = performance.now();
+        const elapsed = now - receivedAt;
+        cloudStats.rendered += 1;
+        cloudStats.over100 += Number(elapsed > 100);
+        cloudSamples.push(elapsed);
+        if (cloudSamples.length > 300) cloudSamples.shift();
+        cloudPaintTimes.push(now);
+        if (cloudPaintTimes.length > 31) cloudPaintTimes.shift();
+      }
+      const sorted = [...cloudSamples].sort((a, b) => a - b);
+      const percentile = (p) => sorted[Math.ceil(sorted.length * p) - 1] ?? null;
+      const hz = cloudPaintTimes.length >= 10
+        ? 1000 * (cloudPaintTimes.length - 1) / (cloudPaintTimes.at(-1) - cloudPaintTimes[0]) : 0;
+      const p95 = percentile(0.95);
+      el.cloudInfo.dataset.metrics = JSON.stringify({
+        ...cloudStats, seq: frame.seq, points: points?.length / 3 || 0, hz,
+        p50: percentile(0.5), p95, max: sorted.at(-1) ?? null,
+      });
+      const rate = hz ? ` · ${hz.toFixed(1)} Hz` : "";
+      el.cloudInfo.textContent = points
+        ? `${frame.cloud_points.toLocaleString()} 个实测点${rate} · 网页取点到绘制 P95 ${p95.toFixed(1)} ms`
+        : "当前帧点云未收到";
+    }
+    cloudBusy = false;
+  }
+
+  function ingestFrame(frame) {
+    if (frame.cloud_points === undefined) {
+      commitFrame(frame);
+      return;
+    }
+    if (cloudPaused) return;
+    if (el.pause.hidden) {
+      document.body.classList.add("paired-cloud");
+      el.latScope.textContent = "板测释放 → 结果";
+      el.cloudTitle.textContent = "全场实测点云 · S3 轨迹";
+      el.cloudInfo.hidden = false;
+      el.pause.hidden = false;
+    }
+    el.conn.textContent = "配对回放 · 原始点云与板测轨迹同帧";
+    cloudStats.received += 1;
+    if (pendingCloud) cloudStats.replaced += 1;
+    pendingCloud = { frame, receivedAt: performance.now() };
+    if (!cloudBusy) void renderPairedFrames();
+  }
+
+  function connect() {
+    const es = new EventSource("/events");
+    es.onopen = () => { el.conn.textContent = "已连接实时流"; };
+    es.onerror = () => { el.conn.textContent = "连接中断，自动重连中..."; };
+    es.addEventListener("init", (e) => {
+      const snap = JSON.parse(e.data);
+      if (snap.input_status) {
+        inputStatus = snap.input_status;
+        el.conn.textContent = inputCaptions[inputStatus];
+      }
+      trails = snap.trails || {};
+      if (snap.latest?.cloud_points !== undefined) ingestFrame(snap.latest);
+      else {
+        if (snap.latest) latest = snap.latest;
+        renderAll();
+      }
+    });
+    es.onmessage = (e) => {
+      const message = JSON.parse(e.data);
+      if (message.type === "input_status") {
+        inputStatus = message.status;
+        el.conn.textContent = inputCaptions[inputStatus];
+        updateHeader();
+      } else ingestFrame(message);
+    };
+  }
+
+  renderAll();
+  connect();
+})();
+</script>
+</body>
+</html>
