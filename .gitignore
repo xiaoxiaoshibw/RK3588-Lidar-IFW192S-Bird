@@ -26,6 +26,7 @@ __pycache__/
 /firmware/**/build/
 /firmware/**/sdkconfig
 /firmware/**/sdkconfig.old
+/deploy/rk3588_containers/.env
 *.bin
 *.birdraw
 *.avi

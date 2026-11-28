@@ -1,0 +1,68 @@
+# Two-container RK3588 deployment stack:
+#   1) lidar-human-fall  -> isolated ROS1 human fall recognition (subscribes to slam-localization roscore)
+#   2) lidar-bird        -> isolated native C++17 bird recognition + web UI (read-only Foxglove subscriber)
+#
+# Existing `slam-localization` container remains untouched as the shared sensor driver + Foxglove bridge layer.
+
+services:
+  lidar-human-fall:
+    container_name: lidar-human-fall
+    image: lidar-human-fall:latest
+    build:
+      context: ./human_fall
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${HUMAN_FALL_BASE_IMAGE:-ros:noetic-ros-base}
+    network_mode: host
+    cpuset: "${HUMAN_FALL_CPUSET:-4,5}"
+    mem_limit: "${HUMAN_FALL_MEM_LIMIT:-1536m}"
+    restart: unless-stopped
+    environment:
+      ROS_MASTER_URI: ${ROS_MASTER_URI:-http://127.0.0.1:11311}
+      ROS_IP: ${ROS_IP:-127.0.0.1}
+      HUMAN_FALL_BUNDLE_DIR: /opt/lidar-human-fall/bundle
+      HUMAN_FALL_MODE: ${HUMAN_FALL_MODE:-instant_start}
+      HUMAN_FALL_MOUNT_PITCH_DEG: ${HUMAN_FALL_MOUNT_PITCH_DEG:-26.0}
+      HUMAN_FALL_MOUNT_ROLL_DEG: ${HUMAN_FALL_MOUNT_ROLL_DEG:-0.0}
+      HUMAN_FALL_DISABLE_IMU: ${HUMAN_FALL_DISABLE_IMU:-1}
+      HUMAN_FALL_PHYSICAL_V1: ${HUMAN_FALL_PHYSICAL_V1:-0}
+      HUMAN_FALL_SINGLE_PERSON_LOCK: ${HUMAN_FALL_SINGLE_PERSON_LOCK:-0}
+      HUMAN_FALL_DIAGNOSTICS: ${HUMAN_FALL_DIAGNOSTICS:-0}
+      ROS_MASTER_WAIT_SEC: ${ROS_MASTER_WAIT_SEC:-60}
+    volumes:
+      - ${HUMAN_FALL_BUNDLE_HOST_DIR:-/home/wel/.local/opt/lidar-rk3588/bundles/human_fall}:/opt/lidar-human-fall/bundle:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  lidar-bird:
+    container_name: lidar-bird
+    image: lidar-bird:latest
+    build:
+      context: ../..
+      dockerfile: deploy/rk3588_containers/bird/Dockerfile
+      args:
+        BASE_IMAGE: ${BIRD_BASE_IMAGE:-ubuntu:20.04}
+    network_mode: host
+    cpuset: "${BIRD_CPUSET:-6,7}"
+    mem_limit: "${BIRD_MEM_LIMIT:-512m}"
+    restart: unless-stopped
+    environment:
+      BIRD_FOXGLOVE_URL: ${BIRD_FOXGLOVE_URL:-ws://127.0.0.1:8765}
+      BIRD_INPUT_TOPIC: ${BIRD_INPUT_TOPIC:-/innolidar_points}
+      BIRD_HTTP_HOST: ${BIRD_HTTP_HOST:-0.0.0.0}
+      BIRD_HTTP_PORT: ${BIRD_HTTP_PORT:-8895}
+      BIRD_AZIMUTH_CSV: ${BIRD_AZIMUTH_CSV:-/config/calibration/ifw192s_azimuth_192x256.csv}
+      BIRD_ELEVATION_CSV: ${BIRD_ELEVATION_CSV:-/config/calibration/ifw192s_elevation_192x256.csv}
+      BIRD_CALIBRATION: ${BIRD_CALIBRATION:-}
+      BIRD_FIRST_FRAME_TIMEOUT: ${BIRD_FIRST_FRAME_TIMEOUT:-15.0}
+      BIRD_FRAME_TIMEOUT: ${BIRD_FRAME_TIMEOUT:-3.0}
+    volumes:
+      - ${BIRD_CALIBRATION_HOST_DIR:-/home/wel/.local/opt/lidar-rk3588/calibration}:/config/calibration:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

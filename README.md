@@ -14,6 +14,7 @@ IFW192S → 以太网 / W5500 → ESP32-S3 → USB 串口 → RK3588 → 浏览�
 | --- | --- | --- |
 | ESP32-S3 实时固件 | [firmware/esp32s3_ifw192s/live_probe](firmware/esp32s3_ifw192s/live_probe) | ESP-IDF 5.5.3、带 Octal PSRAM 的 ESP32-S3、W5500 与 IFW192S |
 | RK3588 实时看板 | [部署说明](deploy/s3_rk3588/README.md) | 已刷入实时固件的 ESP32-S3、USB 串口和该设备的 IFW192S 标定 |
+| RK3588 双容器部署 | [双容器说明](deploy/rk3588_containers/README.md) | RK3588 既有 `slam-localization` 容器、IFW192S 标定表与人体倒地发布包 |
 | 无硬件看板回放 | [web/s3_live_server.py](web/s3_live_server.py) | 本地 S3 结果 JSONL |
 | 原始点云及结果联合回放 | [web/s3_cloud_replay.py](web/s3_cloud_replay.py) | 匹配的 BIRDRAW、计时映射、UART 日志及外部参考解码库 |
 | 相机对照视频 | [web/s3_sync_video.py](web/s3_sync_video.py) | S3 结果 JSONL、可选的相机视频及接收时间元数据 |
